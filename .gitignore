@@ -6,8 +6,30 @@ __pycache__/
 # MLflow
 mlflow.db
 mlruns/
+mlruns.db
+artifacts/
+mlartifacts/
 
 # 학습된 모델 (용량 큼 → DVC로 관리 권장)
 *.pkl
 model/
+models/
 credit_model/
+
+# --- DVC 관련 ---
+# DVC가 관리하는 실제 데이터 본체 (dvc add 시 자동 추가되지만 명시적 확인용)
+ 
+# DVC 내부 캐시 및 로컬 설정
+.dvc/cache
+.dvc/tmp
+.dvc/config.local
+
+# --- IDE 및 시스템 관련 ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# --- 데이터 및 로그 ---
+*.log
+!data/*.dvc  # 중요: .dvc 파일은 절대 제외하면 안 됨 (!)
