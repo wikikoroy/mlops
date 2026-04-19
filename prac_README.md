@@ -426,3 +426,152 @@ ROC-AUC: 0.8833
 | `data/credit_fraud_dataset.csv` | 입력 데이터셋 |
 | `credit_model/*.pkl` | 학습된 파이프라인 모델 |
 | `train.py` | iris 데이터 기반 간단 파이프라인 (비교용 레퍼런스) |
+
+---
+
+# 부록: MLflow 추적 대상 선택 — "DagsHub Experiments 탭이 비어있는 문제"
+
+> 실습 중 겪었던 실제 문제 사례. `train_with_mlflow.py`로 여러 번 실험을 기록했는데도 **DagsHub 웹페이지의 Experiments 탭이 "Uh oh, this looks very empty!" 상태**로 남아있던 이유와 해결 과정을 정리합니다.
+
+## 1. 증상
+
+DagsHub 저장소 웹페이지(`https://dagshub.com/wikikoroy/mlops`) → **Experiments** 탭 진입:
+
+```
+🧪 Uh oh, this looks very empty!
+Not sure how to start logging experiments?
+```
+
+- `train_with_mlflow.py` 를 여러 번 실행 → 콘솔에는 `✅ 등록 완료! Version: N` 출력됨
+- `mlflow ui --port 5080` 에서는 모든 실험이 정상적으로 보임
+- 하지만 **DagsHub 웹**에는 아무것도 안 보임
+
+## 2. 원인 진단
+
+### MLflow의 "Tracking URI" 개념
+
+MLflow는 실험 결과를 **어디에 저장할지**를 `MLFLOW_TRACKING_URI` 라는 값으로 결정합니다. 이 값 하나가 전체 기록의 **목적지**를 좌우합니다.
+
+| URI 예시 | 저장 위치 | 외부 공유 |
+|---------|----------|---------|
+| `sqlite:///mlflow.db` | 이 PC의 SQLite 파일 | ❌ 불가 |
+| `http://127.0.0.1:5080` | 내 PC에서 실행 중인 MLflow 서버 | ❌ 불가 (로컬 포트) |
+| `https://dagshub.com/<user>/<repo>.mlflow` | DagsHub 호스팅 서버 | ✅ 웹 공유 |
+
+### 문제의 구조
+
+```
+┌───────────────────────┐
+│ train_with_mlflow.py  │
+└──────────┬────────────┘
+           │ mlflow.log_*()
+           ▼
+┌───────────────────────────────────────┐
+│ MLFLOW_TRACKING_URI 값에 따라 분기    │
+├───────────────────────────────────────┤
+│ ① http://127.0.0.1:5080  ← 우리가 씀  │──▶ 로컬 SQLite (이 PC에만)
+│ ② https://dagshub.../.mlflow          │──▶ DagsHub 웹에 표시
+└───────────────────────────────────────┘
+```
+
+실습 초반 코드는 **①번으로만 기록**되고 있었습니다. 따라서:
+
+- `mlflow ui` (로컬)에서는 보임 ✅
+- DagsHub Experiments 탭은 **영원히 비어있음** ❌
+
+→ "동기화 안 됨"이 아니라 **"애초에 DagsHub로 전송된 적이 없음"** 이 정확한 진단.
+
+### 왜 헷갈리기 쉬운가?
+
+1. **GitHub 푸시 ≠ 실험 동기화**
+   - `git push`는 **코드**만 GitHub로 전송
+   - MLflow 실험 기록은 별도의 채널 (Tracking URI로 지정된 곳)
+   - DagsHub는 "GitHub 미러 + MLflow 서버" 두 기능을 모두 제공하지만, 두 채널은 **독립적**
+
+2. **로컬 UI의 존재가 진실을 가림**
+   - `mlflow ui`로 결과가 잘 보이니 "기록은 잘 되고 있다"고 착각
+   - 실제로는 **전혀 다른 저장소**에 쌓이는 중
+
+## 3. 해결 방법 2가지
+
+### 방법 A: 환경변수로 주입 (수동)
+
+```bash
+# 1. DagsHub에서 Access Token 발급
+#    https://dagshub.com/user/settings/tokens → Generate New Token
+
+# 2. 실행 환경에 설정
+export MLFLOW_TRACKING_URI="https://dagshub.com/wikikoroy/mlops.mlflow"
+export MLFLOW_TRACKING_USERNAME="wikikoroy"
+export MLFLOW_TRACKING_PASSWORD="<DagsHub 토큰>"
+
+# 3. 기존 스크립트 그대로 실행
+python train_with_mlflow.py
+```
+
+**장점**: 코드 무변경, 환경 전환(로컬↔DagsHub) 쉬움
+**단점**: 매 세션마다 export 필요, 토큰 유출 위험(히스토리)
+
+### 방법 B: `dagshub` Python 클라이언트 (자동)
+
+```bash
+uv pip install dagshub
+```
+
+스크립트 상단에 한 줄 추가:
+```python
+import dagshub
+dagshub.init(repo_owner="wikikoroy", repo_name="mlops", mlflow=True)
+```
+
+동작 원리:
+1. 최초 실행 시 **브라우저 OAuth** 팝업 → DagsHub 로그인
+2. 로컬에 토큰 캐시 저장 (`~/.config/dagshub/tokens`)
+3. `MLFLOW_TRACKING_URI` / `USERNAME` / `PASSWORD` 환경변수를 **자동 주입**
+4. `mlflow.set_tracking_uri`까지 내부 호출
+
+**장점**: 재실행 시 재인증 불필요, 코드만 봐도 의도가 명확
+**단점**: DagsHub 특화 (다른 플랫폼 이동 시 코드 수정 필요)
+
+## 4. 검증 방법
+
+### 실행 후 확인 포인트
+
+실행 로그에 **DagsHub URL**이 나오면 성공:
+```
+🧪 View experiment at: https://dagshub.com/wikikoroy/mlops.mlflow/#/experiments/0
+🏃 View run n200_d5 at: https://dagshub.com/wikikoroy/mlops.mlflow/#/experiments/0/runs/...
+```
+
+로컬 서버로 기록될 때는 `http://127.0.0.1:5080/...` 가 찍힙니다 → 이게 나오면 DagsHub로 안 간 것.
+
+### DagsHub 웹 확인
+1. https://dagshub.com/wikikoroy/mlops → **Experiments** 탭
+2. 실험 목록에 `iris_classification` 나타남
+3. 각 run의 params / metrics / artifacts 확인 가능
+
+## 5. 교훈
+
+| 교훈 | 실무 체크리스트 |
+|------|-----------------|
+| **"기록되고 있다" ≠ "원하는 곳에 기록되고 있다"** | 매 세션 시작 시 `echo $MLFLOW_TRACKING_URI` 로 확인 |
+| **Tracking URI 변경은 모델을 복제하지 않는다** | 이전 실험을 DagsHub로 옮기려면 재실행 또는 import 필요 |
+| **로컬과 DagsHub의 Registry는 별개 네임스페이스** | 로컬 Version 1 ≠ DagsHub Version 1 (별개 카운터) |
+| **DagsHub 업로드는 느리다** | 모델당 수십 초 소요 (artifact 크기에 비례). 대용량은 사전 예상 필요 |
+
+## 6. 관련 변경 이력
+
+이 프로젝트에서 적용한 구체적 변경:
+
+- `train_with_mlflow.py`: import 섹션 바로 아래에 `import dagshub; dagshub.init(...)` 추가
+- **기존 `tracking_uri = os.getenv("MLFLOW_TRACKING_URI", "http://localhost:5000")` 라인은 그대로 둠** → `dagshub.init`이 먼저 환경변수를 설정하기 때문에 이후 `os.getenv`가 DagsHub URI를 읽어오게 됨 (방식 A와 B의 자연스러운 결합)
+
+```python
+# ── DagsHub 연결 ──────────────────────────────────────────────
+import dagshub
+dagshub.init(repo_owner="wikikoroy", repo_name="mlops", mlflow=True)
+
+# ── MLflow 연결 설정 (기존) ──────────────────────────────────
+tracking_uri = os.getenv("MLFLOW_TRACKING_URI", "http://localhost:5000")
+mlflow.set_tracking_uri(tracking_uri)  # 이제 DagsHub URI가 주입된 상태로 호출됨
+```
