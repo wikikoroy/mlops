@@ -56,18 +56,21 @@ from mlflow.tracking import MlflowClient                     # MLflow 서버 직
 # [AI] 명시적으로 run_id, model_name 등을 넘겨 조작. Registry의 alias/tag처럼
 # [AI] fluent API로 처리할 수 없는 세밀한 작업에 사용.
 
-# ── DagsHub 연결 ──────────────────────────────────────────────
+# ── DagsHub 연결 (로컬 전용) ─────────────────────────────────
 # 초금: DagsHub = "GitHub + MLflow + DVC가 한 곳에 합쳐진" 협업 플랫폼.
-# 초금: dagshub.init(mlflow=True) 한 줄이:
+# 초금: dagshub.init(mlflow=True)은 로컬 실행 시:
 # 초금:   1) MLFLOW_TRACKING_URI를 DagsHub 주소로 자동 설정
-# 초금:   2) 인증 토큰을 자동 관리 (최초 실행 시 브라우저 OAuth)
-# 초금:   3) mlflow.set_tracking_uri까지 내부적으로 호출
-# 초금: → 이 블록이 있는 한 아래 set_tracking_uri 호출은 사실상 no-op이 됩니다.
-# [AI] dagshub.init은 os.environ에 MLFLOW_TRACKING_URI/USERNAME/PASSWORD를 심고
-# [AI] mlflow.set_tracking_uri까지 호출. 최초 실행 시 로컬에 토큰 캐시 저장
-# [AI] (~/.config/dagshub/tokens) → 이후 재실행 때는 OAuth 재로그인 불필요.
-import dagshub
-dagshub.init(repo_owner="wikikoroy", repo_name="mlops", mlflow=True)
+# 초금:   2) 브라우저 OAuth로 토큰 관리 (최초 1회)
+# 초금:   3) mlflow.set_tracking_uri까지 내부 호출
+# 초금: ⚠ CI(GitHub Actions)에서는 브라우저가 없어 OAuth가 실패합니다.
+# 초금:   → 따라서 "MLFLOW_TRACKING_URI가 이미 설정돼 있지 않을 때만" 실행.
+# 초금:   → CI는 GitHub Secrets로 env 변수를 주입하므로 이 if문이 자동으로 건너뜀.
+# [AI] CI/CD 환경 분기 패턴: 대화형(OAuth/키보드 입력)이 필요한 초기화는
+# [AI] 로컬에만 한정하고, CI에서는 사전 주입된 env 변수에 의존하도록 분기.
+# [AI] 이렇게 해야 "로컬 개발자 경험(간편)" + "CI 안정성(비대화형)" 둘 다 확보.
+if not os.getenv("MLFLOW_TRACKING_URI"):
+    import dagshub
+    dagshub.init(repo_owner="wikikoroy", repo_name="mlops", mlflow=True)
 
 # ── MLflow 연결 설정 ──────────────────────────────────────────
 # 초금: MLflow는 "어딘가의 기록 장소(= Tracking 서버)"에 실험 결과를 저장합니다.
